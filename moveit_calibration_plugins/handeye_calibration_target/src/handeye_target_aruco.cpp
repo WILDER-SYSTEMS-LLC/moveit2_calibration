@@ -121,11 +121,11 @@ bool HandEyeArucoTarget::setTargetDimension(double marker_measured_size, double 
   std::lock_guard<std::mutex> aruco_lock(aruco_mutex_);
   marker_size_real_ = marker_measured_size;
   marker_separation_real_ = marker_measured_separation;
-  RCLCPP_INFO_STREAM_THROTTLE(LOGGER_CALIBRATION_TARGET, clock, LOG_THROTTLE_PERIOD,
-                              "Set target real dimensions: \n"
-                                  << "marker_measured_size " << std::to_string(marker_measured_size) << "\n"
-                                  << "marker_measured_separation " << std::to_string(marker_measured_separation)
-                                  << "\n");
+  // RCLCPP_INFO_STREAM_THROTTLE(LOGGER_CALIBRATION_TARGET, clock, LOG_THROTTLE_PERIOD,
+  //                             "Set target real dimensions: \n"
+  //                                 << "marker_measured_size " << std::to_string(marker_measured_size) << "\n"
+  //                                 << "marker_measured_separation " << std::to_string(marker_measured_separation)
+  //                                 << "\n");
   return true;
 }
 
