@@ -92,7 +92,7 @@ namespace moveit_handeye_calibration
 {
 void HandEyeSolverDefault::initialize()
 {
-  solver_names_ = { "Tsai1989", "Park1994", "Horaud1995", "Andreff1999", "Daniilidis1998" };
+  solver_names_ = { "Sarabandi2022", "Tsai1989", "Park1994", "Horaud1995", "Andreff1999", "Daniilidis1998" };
   solvers_["Tsai1989"] = cv::CALIB_HAND_EYE_TSAI;
   solvers_["Park1994"] = cv::CALIB_HAND_EYE_PARK;
   solvers_["Horaud1995"] = cv::CALIB_HAND_EYE_HORAUD;
@@ -108,6 +108,51 @@ const std::vector<std::string>& HandEyeSolverDefault::getSolverNames() const
 
 const Eigen::Isometry3d& HandEyeSolverDefault::getCameraRobotPose() const
 {
+  return camera_robot_pose_;
+}
+
+const Eigen::Isometry3d HandEyeSolverDefault::calib_hand_eye_sarabandi(
+    const std::vector<Eigen::Isometry3d>& T_gripper2base, const std::vector<Eigen::Isometry3d>& T_target2cam)
+{
+  int n = T_gripper2base.size();
+
+  Eigen::MatrixXd A(n - 1, 3), B(n - 1, 3);
+
+  std::vector<Eigen::Isometry3d> Hg = T_gripper2base;
+  std::vector<Eigen::Isometry3d> Hc = T_target2cam;
+  for (size_t i = 1; i < Hg.size(); i++)
+  {
+    // Hgi is from Gi (gripper) to RW (robot base)
+    Eigen::Isometry3d Hgij = Hg[i].inverse() * Hg[0];
+    A.row(i - 1) << (Hgij(2, 1) - Hgij(1, 2)), (Hgij(0, 2) - Hgij(2, 0)), (Hgij(1, 0) - Hgij(0, 1));
+
+    // Hcj is from CW (calibration target) to Cj (camera)
+    Eigen::Isometry3d Hcij = Hc[i] * Hc[0].inverse();
+    B.row(i - 1) << (Hcij(2, 1) - Hcij(1, 2)), (Hcij(0, 2) - Hcij(2, 0)), (Hcij(1, 0) - Hcij(0, 1));
+  }
+
+  Eigen::Matrix3d R = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(B);
+
+  // Find the closest rotation matrix
+  Eigen::JacobiSVD<Eigen::Matrix3d> svd_rotation(R, Eigen::ComputeFullU | Eigen::ComputeFullV);
+  R = svd_rotation.matrixU() * svd_rotation.matrixV().transpose();
+
+  Eigen::MatrixXd C(3 * (n - 1), 3);
+  Eigen::VectorXd d(3 * (n - 1));
+  for (size_t i = 1; i < Hg.size(); i++)
+  {
+    Eigen::Isometry3d Hgij = Hg[i].inverse() * Hg[0];
+    Eigen::Isometry3d Hcij = Hc[i] * Hc[0].inverse();
+
+    C.block<3, 3>(3 * (i - 1), 0) = Eigen::Matrix3d::Identity() - Hgij.rotation();
+    d.segment<3>(3 * (i - 1)) = Hgij.translation() - (R * Hcij.translation());
+  }
+
+  Eigen::Vector3d t = C.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(d);
+
+  Eigen::Isometry3d camera_robot_pose_;
+  camera_robot_pose_.linear() = R;
+  camera_robot_pose_.translation() = t;
   return camera_robot_pose_;
 }
 
@@ -139,13 +184,17 @@ bool HandEyeSolverDefault::solve(const std::vector<Eigen::Isometry3d>& effector_
     RCLCPP_ERROR_STREAM(LOGGER_CALIBRATION_SOLVER, *error_message);
     return false;
   }
-  solver_method = solvers_[solver_name];
+  if (solver_name != "Sarabandi2022")
+  {
+    solver_method = solvers_[solver_name];
+  }
 
   std::vector<cv::Mat> R_gripper2base, t_gripper2base, R_target2cam, t_target2cam;
-
+  std::vector<Eigen::Isometry3d> T_gripper;
   if (setup == EYE_IN_HAND)
   {
     auto T_gripper2base = effector_wrt_world;
+    T_gripper = T_gripper2base;
     R_gripper2base = convertToCVMatrixRotation(T_gripper2base);
     t_gripper2base = convertToCVMatrixTranslation(T_gripper2base);
   }
@@ -157,6 +206,7 @@ bool HandEyeSolverDefault::solve(const std::vector<Eigen::Isometry3d>& effector_
       T = T.inverse();
     }
     auto T_base2gripper = T_gripper2base;
+    T_gripper = T_base2gripper;
     R_gripper2base = convertToCVMatrixRotation(T_base2gripper);
     t_gripper2base = convertToCVMatrixTranslation(T_base2gripper);
   }
@@ -173,10 +223,17 @@ bool HandEyeSolverDefault::solve(const std::vector<Eigen::Isometry3d>& effector_
   t_target2cam = convertToCVMatrixTranslation(T_target2cam);
 
   cv::Mat R_cam2gripper, t_cam2gripper;
-  cv::calibrateHandEye(R_gripper2base, t_gripper2base, R_target2cam, t_target2cam, R_cam2gripper, t_cam2gripper,
-                       solver_method);
 
-  camera_robot_pose_ = convertToIsometry(R_cam2gripper, t_cam2gripper);
+  if (solver_name != "Sarabandi2022")
+  {
+    cv::calibrateHandEye(R_gripper2base, t_gripper2base, R_target2cam, t_target2cam, R_cam2gripper, t_cam2gripper,
+                         solver_method);
+    camera_robot_pose_ = convertToIsometry(R_cam2gripper, t_cam2gripper);
+  }
+  else
+  {
+    camera_robot_pose_ = calib_hand_eye_sarabandi(T_gripper, T_target2cam);
+  }
 
   return true;
 }
